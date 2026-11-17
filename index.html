@@ -1,0 +1,702 @@
+<!DOCTYPE html>
+<html lang="en-GB">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Get to the Fire Exit!</title>
+<style>
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; background: #eef1f5; font-family: "Segoe UI", Arial, sans-serif; color: #1b2a41; }
+  .wrap { max-width: 920px; margin: 0 auto; padding: 12px; }
+  .header { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px; margin-bottom: 8px; }
+  .title { font-size: 22px; font-weight: 800; color: #0b3d6e; letter-spacing: .2px; }
+  .title span { color: #1e9e4a; }
+  .scores { font-size: 15px; font-weight: 600; }
+  .scores b { color: #d31f1f; }
+  .stage { position: relative; width: 100%; border-radius: 12px; overflow: hidden; box-shadow: 0 4px 14px rgba(0,0,0,.15); background: #fff; touch-action: manipulation; user-select: none; -webkit-user-select: none; }
+  canvas { display: block; width: 100%; height: auto; cursor: pointer; }
+  .overlay { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; padding: 14px; background: rgba(11,32,58,.9); color: #fff; overflow-y: auto; }
+  .overlay.hidden { display: none; }
+  .overlay h2 { margin: 0 0 6px; font-size: 26px; }
+  .overlay h2.bad { color: #ff7a6b; }
+  .overlay h2.good { color: #6fe39a; }
+  .overlay p { margin: 4px 0; max-width: 620px; font-size: 15px; line-height: 1.4; }
+  .card { margin-top: 10px; max-width: 640px; width: 100%; text-align: left; background: rgba(255,255,255,.1); border-left: 5px solid #1e9e4a; border-radius: 8px; padding: 10px 14px; font-size: 14px; line-height: 1.45; }
+  .card.warn { border-left-color: #ffb400; }
+  .card b.lbl { display: block; color: #ffd36b; font-size: 12px; text-transform: uppercase; letter-spacing: .6px; margin-top: 4px; }
+  .card ul { margin: 4px 0 0; padding-left: 18px; }
+  .card li { margin: 2px 0; }
+  .btn { margin-top: 14px; background: #1e9e4a; color: #fff; border: none; border-radius: 8px; padding: 10px 26px; font-size: 16px; font-weight: 700; cursor: pointer; }
+  .btn:hover, .btn:focus-visible { background: #17803b; outline: 3px solid #ffd200; outline-offset: 2px; }
+  .controls { display: flex; gap: 10px; justify-content: center; margin-top: 10px; }
+  .ctrl { flex: 1; max-width: 200px; padding: 12px; font-size: 16px; font-weight: 700; border-radius: 10px; border: 2px solid #0b3d6e; background: #fff; color: #0b3d6e; cursor: pointer; touch-action: none; }
+  .ctrl:active { background: #0b3d6e; color: #fff; }
+  .help { margin-top: 8px; font-size: 13px; color: #4a5a70; text-align: center; }
+  @media (max-width: 560px) {
+    .overlay h2 { font-size: 19px; }
+    .overlay p, .card { font-size: 12.5px; }
+    .title { font-size: 18px; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="header">
+    <div class="title">Get to the <span>Fire Exit!</span></div>
+    <div class="scores">Score: <b id="score">0</b> &nbsp;|&nbsp; Best: <b id="best">0</b></div>
+  </div>
+
+  <div class="stage" id="stage">
+    <canvas id="game" width="900" height="320" aria-label="Get to the Fire Exit game area"></canvas>
+
+    <div class="overlay" id="overlay" aria-live="polite"></div>
+  </div>
+
+  <div class="controls">
+    <button class="ctrl" id="jumpBtn" type="button">⬆ Jump</button>
+    <button class="ctrl" id="duckBtn" type="button">⬇ Duck</button>
+  </div>
+  <div class="help">Keyboard: <b>Space / ↑</b> to jump (hold for higher), <b>↓</b> to duck under smoke. Or tap the game to jump.</div>
+</div>
+
+<script>
+(function () {
+  const canvas = document.getElementById('game');
+  const ctx = canvas.getContext('2d');
+  const W = canvas.width, H = canvas.height;
+  const GROUND = 266;
+
+  const scoreEl = document.getElementById('score');
+  const bestEl = document.getElementById('best');
+  const overlay = document.getElementById('overlay');
+
+  let best = 0;
+  try { best = parseInt(localStorage.getItem('fireExitBest') || '0', 10) || 0; } catch (e) { best = 0; }
+  bestEl.textContent = best;
+
+  /* ---------------- Hazards & guidance ---------------- */
+  const H_SMOKE = {
+    type: 'smoke', name: 'Smoke', w: 90, h: 46, air: true,
+    why: 'Smoke rises and is the biggest danger in a fire. It can overcome a person in minutes, long before the flames reach them.',
+    todo: 'If you meet smoke, keep low where the air is clearer and keep moving along your escape route. Never go back into the building for belongings.'
+  };
+
+  const SHOWROOM = [
+    { type: 'banner', name: 'Pull-up banner left in front of the fire exit route', w: 28, h: 56,
+      why: 'Promotional displays are often moved during events and end up on escape routes, slowing people down when every second counts.',
+      todo: 'Plan where displays go before setting them up. Keep them away from exit routes and fire doors, and put them back when the event finishes.' },
+    { type: 'brochures', name: 'Boxes of brochures on the escape route', w: 38, h: 32,
+      why: 'Deliveries “just left there for now” are one of the most common reasons exit routes become blocked.',
+      todo: 'Put deliveries straight into the correct storage area. Nothing should be stored on a route to a fire exit, even for a short time.' },
+    { type: 'mop', name: 'Mop bucket on the exit route', w: 34, h: 30,
+      why: 'Cleaning equipment and wet floors create a slip and trip hazard right where people will be hurrying.',
+      todo: 'Clean exit routes when they are quiet, use wet floor signs, and return equipment to its storage area as soon as you finish.' },
+    { type: 'chair', name: 'Customer chair blocking the route', w: 36, h: 42,
+      why: 'Furniture creeps into walkways over time and narrows the route people need to escape safely.',
+      todo: 'Keep furniture in its set layout and leave escape routes their full width. If the layout changes, check the routes are still clear.' },
+    { type: 'cable', name: 'Trailing cable from a display screen', w: 70, h: 10,
+      why: 'Cables across a walkway are an easy trip in a hurry, and in smoke or poor lighting they can be impossible to see.',
+      todo: 'Route cables along walls or use cable covers. Never run them across an exit route or through a fire door.' },
+    { type: 'tyredisplay', name: 'Tyre display stand in the walkway', w: 40, h: 46,
+      why: 'Heavy display stock is hard to move quickly and can block an exit completely if it falls.',
+      todo: 'Position displays securely and well clear of escape routes and fire exit doors.' }
+  ];
+
+  const WORKSHOP = [
+    { type: 'tyres', name: 'Tyres stacked on the escape route', w: 38, h: 48,
+      why: 'Tyres are combustible and give off thick, toxic smoke. Stacked on a route they block the way out and add fuel to a fire.',
+      todo: 'Store tyres only in the designated area, stacked securely and well away from exit routes and fire exit doors.' },
+    { type: 'spill', name: 'Oil spill across the walkway', w: 62, h: 8,
+      why: 'An oil spill on an escape route is a serious slip hazard, and some spills can add fuel to a fire.',
+      todo: 'Use the spill kit straight away, make the area safe until it is clean, and report spills you cannot deal with.' },
+    { type: 'jack', name: 'Trolley jack left in the walkway', w: 56, h: 20,
+      why: 'Workshop equipment left out after a job is a trip hazard and can stop people getting past quickly.',
+      todo: 'Return jacks, stands and tools to their storage area after every job. Keep yellow walkway lines and exit routes clear.' },
+    { type: 'hose', name: 'Air line across the exit route', w: 72, h: 10,
+      why: 'Air lines and leads stretched across a walkway are easy to miss when people are rushing or the area is full of smoke.',
+      todo: 'Retract air lines after use and never run them across walkways or through fire exit doors.' },
+    { type: 'drum', name: 'Oil drum stored on the escape route', w: 30, h: 44,
+      why: 'Flammable liquids on an escape route block the way out and could feed a fire exactly where people need to escape.',
+      todo: 'Store oils and chemicals in their designated, labelled storage area with the right COSHH information. Never store them on exit routes.' },
+    { type: 'pallet', name: 'Pallet left in front of the fire exit', w: 58, h: 18,
+      why: 'Fire exit doors are the most important part of the escape route. Anything left in front of them can stop people getting out.',
+      todo: 'Keep fire exit doors clear on both sides, including outside. Report a blocked fire exit to your manager straight away.' },
+    { type: 'parts', name: 'Parts boxes in the walkway', w: 34, h: 34,
+      why: 'Parts waiting to be fitted or returned often end up on walkways and narrow the route out.',
+      todo: 'Keep parts in the parts area or at the bay, not on walkways or exit routes.' }
+  ];
+
+  const LEVELS = [
+    { name: 'Showroom', hazards: SHOWROOM, length: 6200, startSpeed: 340, maxSpeed: 520, smokeFrom: 3000 },
+    { name: 'Workshop', hazards: WORKSHOP, length: 8200, startSpeed: 400, maxSpeed: 640, smokeFrom: 1200 }
+  ];
+
+  const KEY_MESSAGE = 'Every fire exit and escape route must be kept clear and ready to use at all times, not just when someone is checking. In a fire, people need to get out fast, often in smoke or poor lighting.';
+
+  const CHECKLIST = [
+    'The route to every fire exit is clear along its full width, with nothing stored on it, even “just for now”.',
+    'Fire exit doors open easily from the inside without a key and are not locked, chained or wedged.',
+    'The area outside each fire exit is clear, so the door opens fully and people can get away from the building.',
+    'Fire exit signs can be seen and are not covered by stock, banners or displays.',
+    'Fire doors close properly and are never propped or wedged open.',
+    'Anything you can’t fix straight away is reported to your manager or Safety Champion.'
+  ];
+
+  /* ---------------- State ---------------- */
+  let state = 'start';
+  let levelIndex, level, player, obstacles, tokens, particles, speed, score, distance, spawnTimer, tokenTimer,
+      lastTime, groundScroll, jumpHeld, duckHeld, hitHazard, alarmT, doorOpen;
+
+  function newRun() { score = 0; levelIndex = 0; }
+
+  function setupLevel() {
+    level = LEVELS[levelIndex];
+    player = { x: 100, y: GROUND, w: 32, h: 52, vy: 0, onGround: true, phase: 0, ducking: false };
+    obstacles = []; tokens = []; particles = [];
+    speed = level.startSpeed;
+    distance = 0;
+    spawnTimer = 1.2;
+    tokenTimer = 2.5;
+    groundScroll = 0;
+    jumpHeld = false; duckHeld = false;
+    hitHazard = null;
+    alarmT = 0;
+    doorOpen = 0;
+  }
+
+  function play() {
+    setupLevel();
+    state = 'playing';
+    overlay.classList.add('hidden');
+    lastTime = performance.now();
+  }
+
+  function saveBest() {
+    const s = Math.floor(score);
+    let isBest = false;
+    if (s > best) {
+      best = s; isBest = true;
+      bestEl.textContent = best;
+      try { localStorage.setItem('fireExitBest', String(best)); } catch (e) {}
+    }
+    return isBest;
+  }
+
+  /* ---------------- Overlay screens ---------------- */
+  function showOverlay(html, btnText, onClick) {
+    overlay.innerHTML = html + '<button class="btn" type="button" id="ovBtn">' + btnText + '</button>';
+    overlay.classList.remove('hidden');
+    const b = document.getElementById('ovBtn');
+    b.addEventListener('click', function (e) { e.stopPropagation(); onClick(); });
+    b.focus();
+  }
+
+  function startScreen() {
+    state = 'start';
+    showOverlay(
+      '<h2>🔥 The fire alarm is sounding!</h2>' +
+      '<p>Get out of the <b>Showroom</b> and then the <b>Workshop</b> to reach the fire exit.</p>' +
+      '<p>Someone has left things on the escape route. Jump over them, duck under smoke and follow the green exit signs for bonus points.</p>' +
+      '<div class="card warn"><b class="lbl">Remember</b>' + KEY_MESSAGE + '</div>',
+      'Start evacuation', function () { newRun(); play(); });
+  }
+
+  function failScreen(hz) {
+    state = 'over';
+    const isBest = saveBest();
+    showOverlay(
+      '<h2 class="bad">' + (hz.type === 'smoke' ? 'Caught in the smoke!' : 'Escape route blocked!') + '</h2>' +
+      '<p><b>' + hz.name + '</b> in the ' + level.name.toLowerCase() + '.</p>' +
+      '<p>Score: <b>' + Math.floor(score) + '</b>' + (isBest ? ' (new best!)' : '') + '</p>' +
+      '<div class="card warn"><b class="lbl">Why it matters</b>' + hz.why +
+      '<b class="lbl">What to do</b>' + hz.todo + '</div>',
+      'Try again', function () { newRun(); play(); });
+  }
+
+  function levelCompleteScreen() {
+    state = 'levelDone';
+    score += 250;
+    scoreEl.textContent = Math.floor(score);
+    showOverlay(
+      '<h2 class="good">✅ ' + level.name + ' cleared! (+250)</h2>' +
+      '<p>You reached the fire exit, but only because you got past everything left on the route.</p>' +
+      '<div class="card"><b class="lbl">Remember</b>' + KEY_MESSAGE + '</div>' +
+      '<p style="margin-top:10px">Next: the <b>Workshop</b>. It’s faster and there’s more smoke.</p>',
+      'Continue to the Workshop', function () { levelIndex++; play(); });
+  }
+
+  function winScreen() {
+    state = 'won';
+    score += 500;
+    const isBest = saveBest();
+    scoreEl.textContent = Math.floor(score);
+    showOverlay(
+      '<h2 class="good">🟢 You made it to the assembly point!</h2>' +
+      '<p>Final score: <b>' + Math.floor(score) + '</b>' + (isBest ? ' (new best!)' : '') + '</p>' +
+      '<p>In real life, nobody should have to dodge obstacles to get out. Make these checks part of your working day:</p>' +
+      '<div class="card"><b class="lbl">Fire exit quick check</b><ul>' +
+      CHECKLIST.map(function (c) { return '<li>' + c + '</li>'; }).join('') + '</ul></div>',
+      'Play again', function () { newRun(); play(); });
+  }
+
+  /* ---------------- Input ---------------- */
+  function jumpPress() {
+    if (state !== 'playing') return;
+    jumpHeld = true;
+    if (player.onGround && !player.ducking) { player.vy = -640; player.onGround = false; }
+  }
+  function jumpRelease() { jumpHeld = false; }
+  function duckPress() { if (state === 'playing') duckHeld = true; }
+  function duckRelease() { duckHeld = false; }
+
+  const JUMP_KEYS = ['Space', 'ArrowUp', 'KeyW'];
+  const DUCK_KEYS = ['ArrowDown', 'KeyS'];
+  document.addEventListener('keydown', function (e) {
+    if (JUMP_KEYS.indexOf(e.code) > -1) {
+      e.preventDefault();
+      if (state === 'playing') jumpPress();
+    } else if (DUCK_KEYS.indexOf(e.code) > -1) {
+      e.preventDefault(); duckPress();
+    }
+  });
+  document.addEventListener('keyup', function (e) {
+    if (JUMP_KEYS.indexOf(e.code) > -1) jumpRelease();
+    if (DUCK_KEYS.indexOf(e.code) > -1) duckRelease();
+  });
+  canvas.addEventListener('pointerdown', function (e) { e.preventDefault(); jumpPress(); });
+  window.addEventListener('pointerup', function () { jumpRelease(); duckRelease(); });
+  window.addEventListener('pointercancel', function () { jumpRelease(); duckRelease(); });
+
+  const jumpBtn = document.getElementById('jumpBtn');
+  const duckBtn = document.getElementById('duckBtn');
+  jumpBtn.addEventListener('pointerdown', function (e) { e.preventDefault(); jumpPress(); });
+  duckBtn.addEventListener('pointerdown', function (e) { e.preventDefault(); duckPress(); });
+  jumpBtn.addEventListener('contextmenu', function (e) { e.preventDefault(); });
+  duckBtn.addEventListener('contextmenu', function (e) { e.preventDefault(); });
+
+  /* ---------------- Spawning ---------------- */
+  function remaining() { return level.length - distance; }
+
+  function spawnObstacle() {
+    if (remaining() < 1000) { spawnTimer = 0.5; return; }
+    const useSmoke = distance > level.smokeFrom && Math.random() < 0.22;
+    if (useSmoke) {
+      obstacles.push({ def: H_SMOKE, x: W + 20, y: GROUND - 92, w: H_SMOKE.w, h: H_SMOKE.h, t: 0 });
+    } else {
+      const list = level.hazards;
+      const def = list[Math.floor(Math.random() * list.length)];
+      obstacles.push({ def: def, x: W + 20, y: GROUND - def.h, w: def.w, h: def.h, t: 0 });
+      if (speed > 470 && Math.random() < 0.22) {
+        const lows = list.filter(function (d) { return d.h <= 12; });
+        if (lows.length) {
+          const s = lows[Math.floor(Math.random() * lows.length)];
+          obstacles.push({ def: s, x: W + 30 + def.w, y: GROUND - s.h, w: s.w, h: s.h, t: 0 });
+        }
+      }
+    }
+    const minGap = Math.max(0.62, 1.3 - (speed - 340) / 800);
+    spawnTimer = minGap + Math.random() * 0.85;
+  }
+
+  function spawnToken() {
+    if (remaining() < 900) { tokenTimer = 2; return; }
+    tokens.push({ x: W + 20, y: GROUND - 115 - Math.random() * 25, bob: Math.random() * 6 });
+    tokenTimer = 3 + Math.random() * 3.5;
+  }
+
+  function overlaps(a, b, pad) {
+    return a.x + pad < b.x + b.w && a.x + a.w - pad > b.x && a.y + pad < b.y + b.h && a.y + a.h - pad > b.y;
+  }
+
+  /* ---------------- Update ---------------- */
+  function update(dt) {
+    alarmT += dt;
+    speed = Math.min(level.maxSpeed, speed + dt * 10);
+    const move = speed * dt;
+    distance += move;
+    score += move / 30;
+    groundScroll = (groundScroll + move) % 48;
+
+    // Ducking
+    player.ducking = duckHeld && player.onGround;
+    player.h = player.ducking ? 30 : 52;
+
+    // Jump physics
+    const gravity = (jumpHeld && player.vy < 0) ? 1500 : 2600;
+    if (duckHeld && !player.onGround) player.vy += 2200 * dt; // fast-fall
+    player.vy += gravity * dt;
+    player.y += player.vy * dt;
+    if (player.y >= GROUND) { player.y = GROUND; player.vy = 0; player.onGround = true; }
+    if (player.onGround) player.phase += dt * speed / (player.ducking ? 40 : 25);
+
+    // Spawn & move
+    spawnTimer -= dt; if (spawnTimer <= 0) spawnObstacle();
+    tokenTimer -= dt; if (tokenTimer <= 0) spawnToken();
+    obstacles.forEach(function (o) { o.x -= move; o.t += dt; });
+    obstacles = obstacles.filter(function (o) { return o.x + o.w > -30; });
+    tokens.forEach(function (t) { t.x -= move; t.bob += dt * 4; });
+
+    const box = { x: player.x, y: player.y - player.h, w: player.w, h: player.h };
+
+    // Tokens
+    for (let i = tokens.length - 1; i >= 0; i--) {
+      const t = tokens[i];
+      const ty = t.y + Math.sin(t.bob) * 5;
+      if (overlaps(box, { x: t.x - 16, y: ty - 10, w: 32, h: 20 }, 0)) {
+        score += 50;
+        particles.push({ x: t.x, y: ty, vx: 0, vy: -60, life: 0.8, text: '+50' });
+        for (let k = 0; k < 10; k++) particles.push({ x: t.x, y: ty, vx: (Math.random() - .5) * 240, vy: (Math.random() - .8) * 240, life: .6 });
+        tokens.splice(i, 1);
+      } else if (t.x < -30) tokens.splice(i, 1);
+    }
+
+    // Hazards
+    for (let i = 0; i < obstacles.length; i++) {
+      const o = obstacles[i];
+      if (overlaps(box, o, o.def.air ? 8 : 5)) { hitHazard = o.def; failScreen(o.def); return; }
+    }
+
+    particles.forEach(function (p) { p.x += p.vx * dt; p.y += p.vy * dt; if (!p.text) p.vy += 500 * dt; p.life -= dt; });
+    particles = particles.filter(function (p) { return p.life > 0; });
+
+    // Reached the exit door?
+    const doorX = player.x + 60 + remaining();
+    if (doorX <= player.x + player.w - 4) {
+      if (levelIndex < LEVELS.length - 1) levelCompleteScreen(); else winScreen();
+    }
+
+    scoreEl.textContent = Math.floor(score);
+  }
+
+  /* ---------------- Drawing helpers ---------------- */
+  function rr(x, y, w, h, r, fill) {
+    ctx.beginPath();
+    ctx.moveTo(x + r, y);
+    ctx.arcTo(x + w, y, x + w, y + h, r);
+    ctx.arcTo(x + w, y + h, x, y + h, r);
+    ctx.arcTo(x, y + h, x, y, r);
+    ctx.arcTo(x, y, x + w, y, r);
+    ctx.closePath();
+    ctx.fillStyle = fill; ctx.fill();
+  }
+
+  function drawCar(x, y, s, col) {
+    // y = bottom of wheels
+    ctx.save(); ctx.translate(x, y); ctx.scale(s, s);
+    rr(0, -38, 150, 26, 10, col);                 // body
+    ctx.beginPath();                              // cabin
+    ctx.moveTo(30, -38); ctx.lineTo(50, -60); ctx.lineTo(105, -60); ctx.lineTo(125, -38); ctx.closePath();
+    ctx.fillStyle = col; ctx.fill();
+    ctx.fillStyle = 'rgba(190,225,250,.9)';      // windows
+    ctx.beginPath(); ctx.moveTo(38, -40); ctx.lineTo(54, -56); ctx.lineTo(76, -56); ctx.lineTo(76, -40); ctx.closePath(); ctx.fill();
+    ctx.beginPath(); ctx.moveTo(80, -40); ctx.lineTo(80, -56); ctx.lineTo(102, -56); ctx.lineTo(117, -40); ctx.closePath(); ctx.fill();
+    ctx.fillStyle = '#fff8c0'; ctx.fillRect(140, -32, 8, 5);   // headlight
+    ctx.fillStyle = '#c0392b'; ctx.fillRect(2, -32, 6, 5);     // tail light
+    [32, 118].forEach(function (wx) {
+      ctx.fillStyle = '#1a1a1a'; ctx.beginPath(); ctx.arc(wx, -12, 13, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = '#b8c0c8'; ctx.beginPath(); ctx.arc(wx, -12, 6, 0, Math.PI * 2); ctx.fill();
+    });
+    ctx.restore();
+  }
+
+  function drawExitSign(x, y, arrow) {
+    rr(x, y, 64, 24, 3, '#1e9e4a');
+    ctx.fillStyle = '#fff';
+    // simple running figure
+    ctx.fillRect(x + 8, y + 5, 3, 3);
+    ctx.strokeStyle = '#fff'; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.moveTo(x + 9, y + 9); ctx.lineTo(x + 8, y + 15); ctx.lineTo(x + 5, y + 20);
+    ctx.moveTo(x + 8, y + 15); ctx.lineTo(x + 12, y + 20);
+    ctx.moveTo(x + 5, y + 11); ctx.lineTo(x + 13, y + 11); ctx.stroke();
+    ctx.strokeRect(x + 17, y + 4, 9, 16);
+    ctx.font = 'bold 11px Segoe UI, Arial'; ctx.fillText(arrow ? 'EXIT ➜' : 'EXIT', x + 30, y + 16);
+  }
+
+  /* ---------------- Backgrounds ---------------- */
+  function drawShowroom() {
+    // Back wall
+    const g = ctx.createLinearGradient(0, 0, 0, GROUND);
+    g.addColorStop(0, '#f6f8fb'); g.addColorStop(1, '#e4e9f0');
+    ctx.fillStyle = g; ctx.fillRect(0, 0, W, GROUND);
+    // Brand stripe
+    ctx.fillStyle = '#0b3d6e'; ctx.fillRect(0, 26, W, 10);
+    // Glass windows (slow parallax)
+    const off = (distance * 0.15) % 220;
+    for (let i = -1; i < 6; i++) {
+      const x = i * 220 - off;
+      const wg = ctx.createLinearGradient(x, 50, x + 200, 200);
+      wg.addColorStop(0, '#cfe6f7'); wg.addColorStop(1, '#a9cfe9');
+      ctx.fillStyle = wg; ctx.fillRect(x + 10, 50, 200, 150);
+      ctx.fillStyle = 'rgba(255,255,255,.45)';
+      ctx.beginPath(); ctx.moveTo(x + 40, 50); ctx.lineTo(x + 80, 50); ctx.lineTo(x + 30, 200); ctx.lineTo(x + 10, 200); ctx.lineTo(x + 10, 140); ctx.closePath(); ctx.fill();
+      ctx.fillStyle = '#9aa7b6'; ctx.fillRect(x + 108, 50, 4, 150);
+    }
+    // Exit signs on wall
+    const so = (distance * 0.3) % 520;
+    for (let i = -1; i < 3; i++) drawExitSign(i * 520 - so + 380, 62, true);
+    // Display cars (mid parallax) on plinths
+    const co = (distance * 0.45) % 420;
+    const cols = ['#c0392b', '#2c3e50', '#ecf0f1', '#2471a3'];
+    for (let i = -1; i < 4; i++) {
+      const x = i * 420 - co + 40;
+      const idx = ((Math.floor((distance * 0.45) / 420) + i) % cols.length + cols.length) % cols.length;
+      ctx.fillStyle = '#cfd6df'; ctx.fillRect(x - 10, GROUND - 14, 220, 14);
+      drawCar(x + 10, GROUND - 14, 1.2, cols[idx]);
+    }
+    // Polished floor
+    const fg = ctx.createLinearGradient(0, GROUND, 0, H);
+    fg.addColorStop(0, '#d9dee5'); fg.addColorStop(1, '#bfc7d1');
+    ctx.fillStyle = fg; ctx.fillRect(0, GROUND, W, H - GROUND);
+    ctx.strokeStyle = 'rgba(255,255,255,.6)'; ctx.lineWidth = 1;
+    for (let x = -groundScroll; x < W + 48; x += 48) { ctx.beginPath(); ctx.moveTo(x, GROUND); ctx.lineTo(x - 30, H); ctx.stroke(); }
+    ctx.fillStyle = '#1e9e4a'; ctx.fillRect(0, GROUND + 4, W, 3);
+  }
+
+  function drawWorkshop() {
+    ctx.fillStyle = '#c9cfd7'; ctx.fillRect(0, 0, W, GROUND);
+    ctx.fillStyle = '#b5bcc6'; ctx.fillRect(0, 0, W, 40);
+    // Roof lights
+    for (let x = 30 - (distance * 0.1) % 200; x < W; x += 200) { rr(x, 8, 110, 10, 3, '#fdfbe8'); }
+    // Roller doors (far)
+    const ro = (distance * 0.2) % 360;
+    for (let i = -1; i < 4; i++) {
+      const x = i * 360 - ro + 200;
+      ctx.fillStyle = '#9ea8b5'; ctx.fillRect(x, 55, 160, GROUND - 55);
+      ctx.strokeStyle = '#8b95a3'; ctx.lineWidth = 2;
+      for (let y = 64; y < GROUND; y += 12) { ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(x + 160, y); ctx.stroke(); }
+      drawExitSign(x + 175, 70, true);
+    }
+    // Vehicle lifts with raised cars (mid)
+    const lo = (distance * 0.45) % 460;
+    const cols = ['#2471a3', '#7f8c8d', '#c0392b', '#f4f6f7'];
+    for (let i = -1; i < 4; i++) {
+      const x = i * 460 - lo + 60;
+      const idx = ((Math.floor((distance * 0.45) / 460) + i) % cols.length + cols.length) % cols.length;
+      ctx.fillStyle = '#e8b400'; ctx.fillRect(x, 70, 12, GROUND - 70); ctx.fillRect(x + 200, 70, 12, GROUND - 70);
+      ctx.fillStyle = '#444'; ctx.fillRect(x + 12, 150, 188, 6);
+      drawCar(x + 30, 150, 1.0, cols[idx]);
+      // Tool chest
+      rr(x + 260, GROUND - 70, 60, 70, 3, '#c0392b');
+      ctx.fillStyle = '#8e2a20';
+      for (let d = 0; d < 5; d++) ctx.fillRect(x + 266, GROUND - 64 + d * 13, 48, 2);
+    }
+    // Floor
+    ctx.fillStyle = '#6b7685'; ctx.fillRect(0, GROUND, W, H - GROUND);
+    ctx.fillStyle = '#ffc400'; ctx.fillRect(0, GROUND + 5, W, 5); ctx.fillRect(0, H - 14, W, 5);
+    ctx.fillStyle = '#5c6675';
+    for (let x = -groundScroll; x < W; x += 48) ctx.fillRect(x, GROUND + 26, 24, 3);
+    ctx.fillStyle = 'rgba(30,158,74,.85)';
+    ctx.font = 'bold 13px Segoe UI, Arial';
+    for (let x = -((distance) % 300); x < W; x += 300) ctx.fillText('➜ FIRE EXIT ROUTE', x + 60, GROUND + 46);
+  }
+
+  function drawExitDoor() {
+    const dx = player.x + 60 + remaining();
+    if (dx > W + 40) return;
+    // Wall section & door
+    ctx.fillStyle = '#7d8896'; ctx.fillRect(dx - 14, 40, 110, GROUND - 40);
+    ctx.fillStyle = '#1e9e4a'; ctx.fillRect(dx - 6, GROUND - 150, 94, 150);
+    ctx.fillStyle = '#9be5b3'; ctx.fillRect(dx + 2, GROUND - 142, 78, 142); // daylight
+    ctx.fillStyle = '#2ecc71'; ctx.fillRect(dx + 2, GROUND - 142, 78, 142);
+    ctx.fillStyle = '#e9f7ef'; ctx.fillRect(dx + 2, GROUND - 142, 78, 142);
+    ctx.fillStyle = '#a5d8ff'; ctx.fillRect(dx + 2, GROUND - 142, 78, 70);
+    ctx.fillStyle = '#6ab04c'; ctx.fillRect(dx + 2, GROUND - 72, 78, 72);
+    // Door leaf (closed until near)
+    const open = Math.max(0, Math.min(1, 1 - (dx - player.x) / 260));
+    const leafW = 78 * (1 - open * 0.85);
+    ctx.fillStyle = '#d0d6dd'; ctx.fillRect(dx + 2, GROUND - 142, leafW, 142);
+    ctx.fillStyle = '#c0392b'; ctx.fillRect(dx + 2, GROUND - 80, leafW, 6); // push bar
+    drawExitSign(dx + 9, GROUND - 180, false);
+    ctx.fillStyle = '#fff'; ctx.font = 'bold 11px Segoe UI, Arial';
+    ctx.fillText('KEEP CLEAR', dx + 10, GROUND - 156);
+  }
+
+  /* ---------------- Characters & objects ---------------- */
+  function drawPlayer() {
+    const x = player.x, y = player.y;
+    if (player.ducking) {
+      const sw = Math.sin(player.phase) * 5;
+      ctx.strokeStyle = '#1b2a41'; ctx.lineWidth = 6; ctx.lineCap = 'round';
+      ctx.beginPath(); ctx.moveTo(x + 10, y - 12); ctx.lineTo(x + 6 + sw, y - 2); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(x + 22, y - 12); ctx.lineTo(x + 26 - sw, y - 2); ctx.stroke();
+      rr(x + 2, y - 24, 30, 14, 5, '#ff8a00');
+      ctx.fillStyle = '#e0e6ee'; ctx.fillRect(x + 2, y - 19, 30, 3);
+      ctx.fillStyle = '#f2c9a0'; ctx.beginPath(); ctx.arc(x + 36, y - 22, 7, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = '#ffd200'; ctx.beginPath(); ctx.arc(x + 36, y - 25, 8, Math.PI, 0); ctx.fill();
+      return;
+    }
+    const swing = player.onGround ? Math.sin(player.phase) * 7 : 4;
+    ctx.strokeStyle = '#1b2a41'; ctx.lineWidth = 6; ctx.lineCap = 'round';
+    ctx.beginPath(); ctx.moveTo(x + 12, y - 18); ctx.lineTo(x + 12 + swing, y - 2); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(x + 20, y - 18); ctx.lineTo(x + 20 - swing, y - 2); ctx.stroke();
+    ctx.fillStyle = '#222'; ctx.fillRect(x + 8 + swing, y - 4, 10, 4); ctx.fillRect(x + 16 - swing, y - 4, 10, 4);
+    rr(x + 4, y - 40, 24, 24, 5, '#ff8a00');
+    ctx.fillStyle = '#e0e6ee'; ctx.fillRect(x + 4, y - 31, 24, 3); ctx.fillRect(x + 4, y - 24, 24, 3);
+    ctx.strokeStyle = '#ff8a00'; ctx.lineWidth = 5;
+    ctx.beginPath(); ctx.moveTo(x + 16, y - 36); ctx.lineTo(x + 16 - swing, y - 22); ctx.stroke();
+    ctx.fillStyle = '#f2c9a0'; ctx.beginPath(); ctx.arc(x + 16, y - 46, 8, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = '#ffd200'; ctx.beginPath(); ctx.arc(x + 16, y - 49, 9, Math.PI, 0); ctx.fill();
+    ctx.fillRect(x + 5, y - 50, 22, 3);
+  }
+
+  function drawObstacle(o) {
+    const x = o.x, y = o.y, w = o.w, h = o.h;
+    switch (o.def.type) {
+      case 'smoke':
+        for (let i = 0; i < 6; i++) {
+          const cx = x + 10 + i * 14 + Math.sin(o.t * 2 + i) * 4;
+          const cy = y + h / 2 + Math.cos(o.t * 2.5 + i * 1.3) * 6;
+          ctx.fillStyle = 'rgba(70,70,78,' + (0.55 + (i % 2) * 0.15) + ')';
+          ctx.beginPath(); ctx.arc(cx, cy, 18 + (i % 3) * 3, 0, Math.PI * 2); ctx.fill();
+        }
+        break;
+      case 'banner':
+        ctx.fillStyle = '#555'; ctx.fillRect(x - 2, y + h - 5, w + 4, 5);
+        rr(x, y, w, h - 5, 2, '#0b3d6e');
+        ctx.fillStyle = '#e8541c'; ctx.fillRect(x + 3, y + 8, w - 6, 6);
+        ctx.fillStyle = '#fff'; ctx.fillRect(x + 5, y + 20, w - 10, 3); ctx.fillRect(x + 5, y + 27, w - 14, 3);
+        break;
+      case 'brochures':
+      case 'parts':
+        rr(x, y, w, h, 2, o.def.type === 'parts' ? '#8d6e4a' : '#b07a43');
+        ctx.fillStyle = o.def.type === 'parts' ? '#a98a63' : '#d9a36a';
+        ctx.fillRect(x + w / 2 - 4, y, 8, h);
+        ctx.strokeStyle = '#6e4f2c'; ctx.lineWidth = 2; ctx.strokeRect(x, y, w, h);
+        break;
+      case 'mop':
+        rr(x, y + 8, w, h - 8, 4, '#f1c40f');
+        ctx.fillStyle = '#d4ac0d'; ctx.fillRect(x, y + 14, w, 3);
+        ctx.strokeStyle = '#7f6000'; ctx.lineWidth = 3;
+        ctx.beginPath(); ctx.moveTo(x + w - 8, y + 10); ctx.lineTo(x + w - 2, y - 26); ctx.stroke();
+        break;
+      case 'chair':
+        ctx.fillStyle = '#34495e';
+        ctx.fillRect(x + 2, y, 6, h - 18);           // back
+        ctx.fillRect(x + 2, y + h - 22, w - 4, 7);    // seat
+        ctx.fillStyle = '#7f8c8d';
+        ctx.fillRect(x + 4, y + h - 15, 3, 15); ctx.fillRect(x + w - 8, y + h - 15, 3, 15);
+        break;
+      case 'cable':
+      case 'hose':
+        ctx.strokeStyle = o.def.type === 'hose' ? '#d35400' : '#0a0a0a'; ctx.lineWidth = 4;
+        ctx.beginPath(); ctx.moveTo(x, y + h);
+        ctx.bezierCurveTo(x + 15, y - 4, x + 30, y + h + 4, x + 45, y + 2);
+        ctx.bezierCurveTo(x + 55, y - 2, x + 62, y + h, x + w, y + h);
+        ctx.stroke();
+        rr(x + w - 10, y + h - 7, 12, 7, 2, o.def.type === 'hose' ? '#95a5a6' : '#e8e8e8');
+        break;
+      case 'tyredisplay':
+        ctx.fillStyle = '#7f8c8d'; ctx.fillRect(x + w / 2 - 2, y, 4, h);
+        ctx.fillRect(x + 4, y + h - 4, w - 8, 4);
+        ctx.fillStyle = '#1e1e1e'; ctx.beginPath(); ctx.arc(x + w / 2, y + 18, 18, 0, Math.PI * 2); ctx.fill();
+        ctx.fillStyle = '#b8c0c8'; ctx.beginPath(); ctx.arc(x + w / 2, y + 18, 8, 0, Math.PI * 2); ctx.fill();
+        break;
+      case 'tyres':
+        for (let i = 0; i < 3; i++) {
+          const ty = y + i * 16;
+          rr(x, ty, w, 15, 6, '#202020');
+          ctx.fillStyle = '#3a3a3a'; ctx.fillRect(x + 6, ty + 6, w - 12, 3);
+        }
+        break;
+      case 'spill':
+        ctx.fillStyle = '#1c1c2b';
+        ctx.beginPath(); ctx.ellipse(x + w / 2, y + h / 2 + 2, w / 2, h / 2 + 1, 0, 0, Math.PI * 2); ctx.fill();
+        ctx.fillStyle = 'rgba(140,120,255,.45)';
+        ctx.beginPath(); ctx.ellipse(x + w / 2 - 8, y + h / 2, 10, 2, 0, 0, Math.PI * 2); ctx.fill();
+        break;
+      case 'jack':
+        rr(x, y + 6, w - 10, h - 10, 3, '#c0392b');
+        ctx.strokeStyle = '#7f8c8d'; ctx.lineWidth = 3;
+        ctx.beginPath(); ctx.moveTo(x + w - 14, y + 10); ctx.lineTo(x + w, y - 10); ctx.stroke();
+        ctx.fillStyle = '#222';
+        ctx.beginPath(); ctx.arc(x + 8, y + h - 3, 4, 0, Math.PI * 2); ctx.arc(x + w - 20, y + h - 3, 4, 0, Math.PI * 2); ctx.fill();
+        break;
+      case 'drum':
+        rr(x, y, w, h, 4, '#1f6fc2');
+        ctx.fillStyle = '#185a9e'; ctx.fillRect(x, y + 10, w, 3); ctx.fillRect(x, y + h - 13, w, 3);
+        ctx.save(); ctx.translate(x + w / 2, y + h / 2); ctx.rotate(Math.PI / 4);
+        ctx.fillStyle = '#fff'; ctx.fillRect(-6, -6, 12, 12);
+        ctx.strokeStyle = '#d31f1f'; ctx.lineWidth = 2; ctx.strokeRect(-6, -6, 12, 12);
+        ctx.restore();
+        break;
+      case 'pallet':
+        ctx.fillStyle = '#c99a5b'; ctx.fillRect(x, y, w, 4); ctx.fillRect(x, y + h - 4, w, 4);
+        ctx.fillStyle = '#a77b42';
+        ctx.fillRect(x + 2, y + 4, 8, h - 8); ctx.fillRect(x + w / 2 - 4, y + 4, 8, h - 8); ctx.fillRect(x + w - 10, y + 4, 8, h - 8);
+        break;
+    }
+  }
+
+  function drawToken(t) {
+    const y = t.y + Math.sin(t.bob) * 5;
+    ctx.fillStyle = 'rgba(30,158,74,.25)';
+    ctx.beginPath(); ctx.arc(t.x, y, 22, 0, Math.PI * 2); ctx.fill();
+    rr(t.x - 16, y - 10, 32, 20, 3, '#1e9e4a');
+    ctx.fillStyle = '#fff'; ctx.font = 'bold 13px Segoe UI, Arial'; ctx.fillText('➜', t.x - 6, y + 5);
+  }
+
+  function drawParticles() {
+    particles.forEach(function (p) {
+      ctx.globalAlpha = Math.max(0, p.life / 0.8);
+      if (p.text) { ctx.fillStyle = '#1e9e4a'; ctx.font = 'bold 16px Segoe UI, Arial'; ctx.fillText(p.text, p.x - 14, p.y - 14); }
+      else { ctx.fillStyle = '#2ecc71'; ctx.fillRect(p.x, p.y, 4, 4); }
+      ctx.globalAlpha = 1;
+    });
+  }
+
+  function drawHUD() {
+    // Alarm beacon
+    const on = Math.floor(alarmT * 4) % 2 === 0;
+    ctx.fillStyle = '#555'; ctx.fillRect(W - 46, 46, 22, 6);
+    ctx.fillStyle = on ? '#ff2b2b' : '#7a1010';
+    ctx.beginPath(); ctx.arc(W - 35, 46, 11, Math.PI, 0); ctx.fill();
+    if (on) { ctx.fillStyle = 'rgba(255,43,43,.25)'; ctx.beginPath(); ctx.arc(W - 35, 42, 26, 0, Math.PI * 2); ctx.fill(); }
+
+    // Red edge pulse
+    const pulse = (Math.sin(alarmT * 6) + 1) / 2;
+    ctx.strokeStyle = 'rgba(211,31,31,' + (0.15 + pulse * 0.35) + ')';
+    ctx.lineWidth = 8; ctx.strokeRect(4, 4, W - 8, H - 8);
+
+    // Progress bar
+    const bx = 20, by = 10, bw = W - 200, bh = 12;
+    rr(bx, by, bw, bh, 6, 'rgba(0,0,0,.25)');
+    const pct = Math.max(0, Math.min(1, distance / level.length));
+    rr(bx, by, Math.max(12, bw * pct), bh, 6, '#1e9e4a');
+    ctx.fillStyle = '#fff'; ctx.beginPath(); ctx.arc(bx + bw * pct, by + bh / 2, 7, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = '#0b3d6e'; ctx.font = 'bold 12px Segoe UI, Arial';
+    ctx.fillText('Level ' + (levelIndex + 1) + ': ' + level.name, bx, by + 28);
+    rr(bx + bw + 8, by - 4, 64, 20, 3, '#1e9e4a');
+    ctx.fillStyle = '#fff'; ctx.font = 'bold 11px Segoe UI, Arial'; ctx.fillText('FIRE EXIT', bx + bw + 13, by + 10);
+  }
+
+  function draw() {
+    ctx.clearRect(0, 0, W, H);
+    if (!level) { level = LEVELS[0]; }
+    if (level.name === 'Showroom') drawShowroom(); else drawWorkshop();
+    drawExitDoor();
+    tokens.forEach(drawToken);
+    obstacles.forEach(function (o) { if (!o.def.air) drawObstacle(o); });
+    drawPlayer();
+    obstacles.forEach(function (o) { if (o.def.air) drawObstacle(o); });
+    drawParticles();
+    drawHUD();
+    if (state === 'over' && hitHazard) { ctx.fillStyle = 'rgba(211,31,31,.15)'; ctx.fillRect(0, 0, W, H); }
+  }
+
+  function loop(now) {
+    const dt = Math.min(0.033, (now - lastTime) / 1000 || 0);
+    lastTime = now;
+    if (state === 'playing') update(dt);
+    draw();
+    requestAnimationFrame(loop);
+  }
+
+  newRun();
+  setupLevel();
+  startScreen();
+  lastTime = performance.now();
+  requestAnimationFrame(loop);
+})();
+</script>
+</body>
+</html>
